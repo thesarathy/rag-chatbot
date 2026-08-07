@@ -15,29 +15,167 @@ from utils.chat import ChatSession
 
 DATA_DIR = "data"
 
+import html as _html
+
+
+def _esc(value) -> str:
+    """Escape untrusted value (file names, PDF text) before injecting into
+    styled HTML. PDF content is arbitrary — never render it raw."""
+    return _html.escape(str(value), quote=True)
+
+
 st.set_page_config(page_title="RAG Chatbot", page_icon="📄", layout="wide")
 
-# ---- Dark theme styling ----
+# ---- Modern dark dashboard styling ----
 st.markdown("""
 <style>
-    .stApp { background-color: #0e1117; color: #fafafa; }
-    .stChatMessage { background-color: #1a1d24; border-radius: 8px; }
-    .source-box {
-        background-color: #1a1d24;
-        border-left: 3px solid #4f8bf9;
-        padding: 10px;
-        margin: 8px 0;
-        border-radius: 4px;
-        font-size: 0.85em;
-    }
+:root {
+    --bg: #0e1117;
+    --bg-soft: #161b24;
+    --card: #1a2029;
+    --card-hover: #212a36;
+    --border: #2a3442;
+    --text: #e6edf3;
+    --text-dim: #9aa7b4;
+    --accent: #8b5cf6;
+    --accent-2: #22d3ee;
+    --grad: linear-gradient(135deg, #8b5cf6, #22d3ee);
+    --user: #262e3c;
+    --assistant-bubble: #1c2330;
+}
+
+/* Root background + text */
+.stApp {
+    background:
+        radial-gradient(1200px at 15% -10%, rgba(139,92,246,0.10), transparent 55%),
+        radial-gradient(1000px at 95% 10%, rgba(34,211,238,0.08), transparent 55%),
+        var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+.block-container { padding-top: 1.25rem; max-width: 1050px; }
+
+/* ------------------------------------------------------------------------- *
+   Hero header
+ * ------------------------------------------------------------------------- */
+.hero {
+    display: flex; align-items: center; gap: 16px;
+    padding: 18px 24px; margin-bottom: 18px;
+    border-radius: 16px;
+    background: linear-gradient(180deg, #161b24, #12161f);
+    border: 1px solid var(--border);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+}
+.hero .logo {
+    width: 46px; height: 46px; border-radius: 12px; flex: 0 0 auto;
+    background: var(--grad); display: grid; place-items: center;
+    font-size: 24px; box-shadow: 0 4px 14px rgba(139,92,246,0.35);
+}
+.hero h1 { font-size: 1.5rem; font-weight: 700; margin: 0; letter-spacing: -0.02em;
+           background: var(--grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.hero p { margin: 2px 0 0; color: var(--text-dim); font-size: 0.9rem; }
+
+/* ------------------------------------------------------------------------- *
+   Chat bubbles — user vs assistant via inner avatar presence
+ * ------------------------------------------------------------------------- */
+[data-testid="stChatMessage"] {
+    background: var(--assistant-bubble);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 2px 14px;
+    max-width: 92%;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.22);
+}
+[data-testid="stChatMessage"]:has([data-testid="stUserAvatar"]) {
+    background: var(--user);
+    border-color: #3b4857;
+    margin-left: auto;
+}
+[data-testid="stChatMessage"]:has([data-testid="stAssistantAvatar"]) {
+    background: var(--assistant-bubble);
+    border-color: rgba(139,92,246,0.35);
+}
+
+/* ------------------------------------------------------------------------- *
+   Source cards
+ * ------------------------------------------------------------------------- */
+.source-box {
+    background: linear-gradient(180deg, var(--card), #141922);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    padding: 12px 14px; margin: 10px 0;
+    border-radius: 10px;
+    font-size: 0.85em; line-height: 1.5;
+    color: var(--text-dim);
+}
+.source-box b { color: var(--text); }
+
+/* Expanders */
+[data-testid="stExpander"] {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden;
+}
+[data-testid="stExpander"] summary { color: var(--text); font-weight: 600; }
+[data-testid="stExpander"] details { color: var(--text-dim); }
+
+/* ------------------------------------------------------------------------- *
+   Sidebar
+ * ------------------------------------------------------------------------- */
+[data-testid="stSidebar"] { background: #10141c; border-right: 1px solid var(--border); }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] .stMarkdown { color: var(--text); }
+.sidebar-brand {
+    padding: 14px; margin-bottom: 10px; border-radius: 12px;
+    background: var(--grad); color: #0a0e14; font-weight: 800;
+    font-size: 1.1rem; text-align: center; letter-spacing: 0.02em;
+}
+[data-testid="stSidebar"] [data-testid="stSlider"] label { color: var(--text-dim); }
+div[data-baseweb="slider"] div[role="slider"] { background: var(--accent); border-color: var(--accent); }
+
+/* Buttons */
+.stButton button, .stDownloadButton button {
+    border-radius: 10px; background: var(--card); color: var(--text);
+    border: 1px solid var(--border); transition: all .15s ease;
+}
+.stButton button:hover, .stDownloadButton button:hover {
+    background: var(--card-hover); border-color: var(--accent);
+    box-shadow: 0 4px 12px rgba(139,92,246,0.25);
+}
+.stButton button[kind="primary"] {
+    background: var(--grad); color: #fff; border: none; font-weight: 600;
+}
+.stButton button[kind="primary"]:hover { filter: brightness(1.08); box-shadow: 0 6px 16px rgba(139,92,246,0.4); }
+
+/* Chat input */
+[data-testid="stChatInput"] {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+}
+[data-testid="stChatInput"] textarea { color: var(--text); }
+
+/* Alerts / uploader / spinner */
+[data-testid="stAlert"], .stAlert { border-radius: 10px; border: 1px solid var(--border); }
+[data-testid="stFileUploaderDropzone"] {
+    background: var(--card); border: 1px dashed var(--border); border-radius: 12px;
+}
+.stSpinner > div { border-color: var(--accent); }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📄 RAG Chatbot")
-st.caption("Ask questions grounded in your uploaded documents.")
+# Hero banner replacing default title
+st.markdown("""
+<div class="hero">
+    <div class="logo">📄</div>
+    <div>
+        <h1>RAG Chatbot</h1>
+        <p>Ask questions grounded in your uploaded documents.</p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # ---- Sidebar: settings + upload ----
 with st.sidebar:
+    st.markdown('<div class="sidebar-brand">⚡ RAG Studio</div>', unsafe_allow_html=True)
     st.header("Settings")
     chunk_size = st.slider("Chunk size", 300, 2000, 1000, step=100)
     chunk_overlap = st.slider("Chunk overlap", 0, 500, 150, step=50)
@@ -125,10 +263,12 @@ else:
             if msg["role"] == "assistant" and "sources" in msg:
                 with st.expander("📚 Retrieved sources"):
                     for chunk in msg["sources"]:
+                        project = chunk.get("project")
+                        tag = f"<span class='tag'>{_esc(project)}</span>" if project else ""
                         st.markdown(
                             f"<div class='source-box'>"
-                            f"<b>{chunk['source']}</b> — page {chunk['page']} "
-                            f"(score: {chunk['score']:.4f})<br>{chunk['text'][:300]}..."
+                            f"<b>{_esc(chunk['source'])}</b> — page {chunk['page']} "
+                            f"(score: {chunk['score']:.4f}){tag}<br>{_esc(chunk['text'][:300])}..."
                             f"</div>",
                             unsafe_allow_html=True
                         )
@@ -147,10 +287,12 @@ else:
 
                     with st.expander("📚 Retrieved sources"):
                         for chunk in result["retrieved_chunks"]:
+                            project = chunk.get("project")
+                            tag = f"<span class='tag'>{_esc(project)}</span>" if project else ""
                             st.markdown(
                                 f"<div class='source-box'>"
-                                f"<b>{chunk['source']}</b> — page {chunk['page']} "
-                                f"(score: {chunk['score']:.4f})<br>{chunk['text'][:300]}..."
+                                f"<b>{_esc(chunk['source'])}</b> — page {chunk['page']} "
+                                f"(score: {chunk['score']:.4f}){tag}<br>{_esc(chunk['text'][:300])}..."
                                 f"</div>",
                                 unsafe_allow_html=True
                             )
