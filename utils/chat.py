@@ -1,11 +1,12 @@
 """
 chat.py
 Orchestrates the full RAG pipeline: retrieval + generation, with
-conversation memory across turns.
+conversation memory across turns. Uses HybridRetriever (dense + BM25)
+for retrieval.
 """
 
 from typing import List, Dict
-from utils.retriever import similarity_search
+from utils.retriever import HybridRetriever
 from utils.llm import ask_llm, build_context
 from groq import Groq
 import os
@@ -22,8 +23,9 @@ class ChatSession:
     orchestrates retrieval + generation for each new turn.
     """
 
-    def __init__(self, vectorstore, top_k: int = 4):
+    def __init__(self, vectorstore, chunks, top_k: int = 4):
         self.vectorstore = vectorstore
+        self.retriever = HybridRetriever(vectorstore, chunks)
         self.top_k = top_k
         self.history: List[Dict] = []  # list of {"role": "user"/"assistant", "content": str}
 
@@ -77,9 +79,7 @@ Return ONLY the rewritten question, nothing else."""
         """
         standalone_question = self._rewrite_query(question)
 
-        retrieved_chunks = similarity_search(
-            self.vectorstore, standalone_question, top_k=self.top_k
-        )
+        retrieved_chunks = self.retriever.search(standalone_question, top_k=self.top_k)
 
         answer = ask_llm(standalone_question, retrieved_chunks)
 

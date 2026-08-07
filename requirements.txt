@@ -8,3 +8,4 @@ streamlit
 sentence-transformers
 langchain-huggingface
 groq
+rank_bm25

@@ -41,7 +41,7 @@ with st.sidebar:
     st.header("Settings")
     chunk_size = st.slider("Chunk size", 300, 2000, 1000, step=100)
     chunk_overlap = st.slider("Chunk overlap", 0, 500, 150, step=50)
-    top_k = st.slider("Top-k retrieval", 1, 10, 4)
+    top_k = st.slider("Top-k retrieval", 1, 10, 6)
 
     st.divider()
     st.header("Upload Documents")
@@ -62,16 +62,22 @@ if "embedding_model" not in st.session_state:
     with st.spinner("Loading embedding model..."):
         st.session_state.embedding_model = get_embedding_model()
 
+if "chunks" not in st.session_state:
+    st.session_state.chunks = []  # populated when PDFs are processed
+
 if "vectorstore" not in st.session_state:
-    # Reuse existing vectorstore on disk if one exists, so we don't
-    # re-embed everything every time the app restarts.
-    if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR):
+    # Only treat a saved vectorstore as usable if we also have its chunks
+    # in memory — HybridRetriever needs both. Without matching chunks,
+    # ignore the stale vectorstore and require re-upload instead of crashing.
+    if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR) and st.session_state.get("chunks"):
         st.session_state.vectorstore = load_vectorstore(st.session_state.embedding_model)
     else:
         st.session_state.vectorstore = None
 
 if "chat_session" not in st.session_state and st.session_state.vectorstore is not None:
-    st.session_state.chat_session = ChatSession(st.session_state.vectorstore, top_k=top_k)
+    st.session_state.chat_session = ChatSession(
+        st.session_state.vectorstore, st.session_state.chunks, top_k=top_k
+    )
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -94,15 +100,12 @@ if process_btn and uploaded_files:
             else:
                 chunks = chunk_pages(pages, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
-                # Merge into the existing vectorstore if one exists, otherwise create new.
-                # Both cases use build_vectorstore, which persists to PERSIST_DIR —
-                # ChromaDB's persistence handles the merge automatically since it's
-                # backed by the same directory.
+                st.session_state.chunks = chunks
                 st.session_state.vectorstore = build_vectorstore(
                     chunks, st.session_state.embedding_model
                 )
                 st.session_state.chat_session = ChatSession(
-                    st.session_state.vectorstore, top_k=top_k
+                    st.session_state.vectorstore, st.session_state.chunks, top_k=top_k
                 )
                 st.success(f"Processed {len(uploaded_files)} document(s) into {len(chunks)} chunks.")
         except Exception as e:

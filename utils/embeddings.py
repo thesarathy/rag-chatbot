@@ -16,7 +16,7 @@ def chunk_pages(
 ) -> List[Dict]:
     """
     Split page-level text into smaller overlapping chunks, preserving
-    source and page metadata on every chunk.
+    source, page, and project-section metadata on every chunk.
     """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -31,28 +31,16 @@ def chunk_pages(
             chunks.append({
                 "text": chunk_text,
                 "source": page["source"],
-                "page": page["page"]
+                "page": page["page"],
+                "project": page.get("project")  # carried through from pdf_loader
             })
 
     return chunks
 
 
 def get_embedding_model(model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-    """
-    Load and return a local Sentence Transformers embedding model via LangChain's
-    HuggingFaceEmbeddings wrapper. This model runs on your machine — no API key,
-    no network call, no cost.
-
-    Args:
-        model_name: HuggingFace model identifier. all-MiniLM-L6-v2 is a strong
-                    default: fast, small (~80MB), and produces 384-dimensional
-                    vectors with solid semantic quality.
-
-    Returns:
-        A LangChain-compatible embeddings object, usable directly with ChromaDB.
-    """
     return HuggingFaceEmbeddings(
         model_name=model_name,
-        model_kwargs={"device": "cpu"},   # change to "cuda" if you have a GPU
-        encode_kwargs={"normalize_embeddings": True}  # improves similarity search quality
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True}
     )
