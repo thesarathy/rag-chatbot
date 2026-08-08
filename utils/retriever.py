@@ -4,26 +4,36 @@ Hybrid retrieval: ChromaDB dense (semantic) search + BM25 sparse (keyword) searc
 fused together, with a diversity cap so answers to enumeration-style questions
 ("which projects use X") aren't dominated by one document/section that happens
 to have high term-frequency for the query.
+
+Chunks are also persisted to disk alongside the vectorstore (chunks.json),
+so restarting the app can reload BOTH the embeddings AND the raw chunk text/
+metadata needed to rebuild the BM25 index — fixing the ZeroDivisionError that
+occurred when only the vectorstore was reloaded but chunks stayed empty.
 """
 
+import json
+import os
+import re
 from langchain_community.vectorstores import Chroma
 from rank_bm25 import BM25Okapi
 from typing import List, Dict
 import numpy as np
-import re
 
 PERSIST_DIR = "vectorstore"
+CHUNKS_FILE = os.path.join(PERSIST_DIR, "chunks.json")
+
+# Match whole alphanumeric words only, discarding punctuation. This is CRITICAL
+# for sparse (BM25) matching: tokenizing on whitespace alone leaves punctuation
+# glued to tokens ("langgraph?"), so a query ending in a question mark never
+# matches the clean chunk token "langgraph" — the exact-keyword signal goes
+# missing and dense (semantic) results knock the keyword-heavy page out of the
+# top-k. Both the chunk index and every query must tokenize identically.
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
 def _tokenize(text: str) -> List[str]:
-    """
-    Normalized tokenizer for BM25. Both the query and the corpus go through
-    the SAME tokenizer so punctuation never keeps a term from matching:
-    previously `query.split()` produced "langgraph?" while the corpus had
-    "LangGraph", so the exact term contributed nothing to the sparse score
-    and retrieval silently fell back to generic semantic hits.
-    """
-    return re.findall(r"[a-z0-9]+", text.lower())
+    """Lowercase and split on word boundaries, dropping punctuation."""
+    return _TOKEN_RE.findall((text or "").lower())
 
 
 def build_vectorstore(chunks: List[Dict], embedding_model) -> Chroma:
@@ -33,11 +43,29 @@ def build_vectorstore(chunks: List[Dict], embedding_model) -> Chroma:
         texts=texts, embedding=embedding_model, metadatas=metadatas,
         persist_directory=PERSIST_DIR
     )
+    save_chunks(chunks)
     return vectorstore
 
 
 def load_vectorstore(embedding_model) -> Chroma:
     return Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding_model)
+
+
+def save_chunks(chunks: List[Dict]) -> None:
+    """Persist chunks (text + source + page + project metadata) to disk
+    alongside the vectorstore, so they can be reloaded on restart."""
+    os.makedirs(PERSIST_DIR, exist_ok=True)
+    with open(CHUNKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(chunks, f)
+
+
+def load_chunks() -> List[Dict]:
+    """Load persisted chunks from disk. Returns an empty list if the file
+    doesn't exist (e.g. a vectorstore built before this persistence fix)."""
+    if not os.path.exists(CHUNKS_FILE):
+        return []
+    with open(CHUNKS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 class HybridRetriever:
@@ -51,31 +79,20 @@ class HybridRetriever:
 
     def __init__(self, vectorstore: Chroma, chunks: List[Dict]):
         self.vectorstore = vectorstore
-        self.chunks = chunks  # same chunks used to build the vectorstore, in the same order
+        self.chunks = chunks
         tokenized = [_tokenize(c["text"]) for c in chunks]
         self.bm25 = BM25Okapi(tokenized)
 
     def search(self, query: str, top_k: int = 4, alpha: float = 0.5,
                candidate_pool: int = 20, max_per_cluster: int = 2) -> List[Dict]:
-        """
-        alpha: weight for dense score (0-1). 0.5 = equal weight to dense + keyword.
-        candidate_pool: how many top-scoring chunks to consider before diversity filtering.
-        max_per_cluster: max chunks allowed from the same ~5-page neighborhood in the
-                          final result, so a single densely-covered section can't crowd
-                          out other relevant sections.
-        """
-        # Dense (semantic) results — over-fetch so fusion has enough candidates
         dense_results = self.vectorstore.similarity_search_with_score(query, k=len(self.chunks))
         dense_scores = np.zeros(len(self.chunks))
         text_to_idx = {c["text"]: i for i, c in enumerate(self.chunks)}
         for doc, score in dense_results:
             idx = text_to_idx.get(doc.page_content)
             if idx is not None:
-                # Chroma's default distance: lower = more similar -> invert for scoring
                 dense_scores[idx] = 1.0 / (1.0 + score)
 
-        # Sparse (keyword) results — tokenized exactly like the corpus so exact
-        # terms/acronyms (CI/CD, LangGraph, LoRA) actually register a match.
         bm25_scores = np.array(self.bm25.get_scores(_tokenize(query)))
 
         def normalize(arr):
@@ -84,35 +101,18 @@ class HybridRetriever:
             return (arr - arr.min()) / (arr.max() - arr.min())
 
         combined = alpha * normalize(dense_scores) + (1 - alpha) * normalize(bm25_scores)
-
-        # Over-fetch a larger candidate pool, ranked by fused score
         ranked_idx = np.argsort(-combined)[:candidate_pool]
 
-        # Greedy diversity selection: skip a candidate if its "cluster"
-        # (a ~5-page neighborhood, used as a cheap proxy for "which project/
-        # section this belongs to") already contributed max_per_cluster chunks.
-        # Cluster keys include the SOURCE filename: with multiple PDFs, two docs
-        # both starting at page 1 are distinct projects, not one crowded cluster.
         cluster_counts = {}
         selected = []
         for i in ranked_idx:
-            cluster = (self.chunks[i]["source"], self.chunks[i]["page"] // 5)
+            cluster = self.chunks[i]["page"] // 5
             if cluster_counts.get(cluster, 0) >= max_per_cluster:
                 continue
             selected.append(i)
             cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1
             if len(selected) == top_k:
                 break
-
-        # Diversity cap must never starve the answer context: if clustering was
-        # too aggressive and we fell short of top_k, top-up with the highest
-        # fused-score candidates still missing. A short context makes the LLM
-        # (rightly) reply "I don't have enough information".
-        for i in ranked_idx:
-            if len(selected) == top_k:
-                break
-            if i not in selected:
-                selected.append(i)
 
         return [{
             "text": self.chunks[i]["text"],

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from utils.pdf_loader import load_multiple_pdfs
 from utils.embeddings import chunk_pages, get_embedding_model
-from utils.retriever import build_vectorstore, load_vectorstore, PERSIST_DIR
+from utils.retriever import build_vectorstore, load_vectorstore, load_chunks, PERSIST_DIR
 from utils.chat import ChatSession
 
 DATA_DIR = "data"
@@ -203,11 +203,19 @@ if "embedding_model" not in st.session_state:
 if "chunks" not in st.session_state:
     st.session_state.chunks = []  # populated when PDFs are processed
 
+if "chunks" not in st.session_state:
+    # Load persisted chunks from disk if they exist (from a previous session's
+    # processed PDFs). Empty list if no vectorstore was ever built, or if it
+    # was built before this persistence fix existed.
+    st.session_state.chunks = load_chunks()
+
 if "vectorstore" not in st.session_state:
-    # Only treat a saved vectorstore as usable if we also have its chunks
-    # in memory — HybridRetriever needs both. Without matching chunks,
-    # ignore the stale vectorstore and require re-upload instead of crashing.
-    if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR) and st.session_state.get("chunks"):
+    # Only reuse the saved vectorstore if we ALSO have its matching chunks —
+    # HybridRetriever needs both to build its BM25 index. Without chunks,
+    # a stale vectorstore is unusable, so treat it as not present instead
+    # of crashing.
+    if (os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR)
+            and st.session_state.chunks):
         st.session_state.vectorstore = load_vectorstore(st.session_state.embedding_model)
     else:
         st.session_state.vectorstore = None
