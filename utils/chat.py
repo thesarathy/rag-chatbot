@@ -29,6 +29,15 @@ class ChatSession:
         self.top_k = top_k
         self.history: List[Dict] = []  # list of {"role": "user"/"assistant", "content": str}
 
+    def set_history(self, history: List[Dict]) -> None:
+        """
+        Swap in the history for the current conversation. One ChatSession (and
+        its retriever) is shared across conversations; only the message history
+        differs. Feed it the active conversation's messages so query rewriting
+        and memory stay scoped to that chat.
+        """
+        self.history = list(history)
+
     def _rewrite_query(self, question: str) -> str:
         """
         If there's prior conversation history, rewrite the current question
